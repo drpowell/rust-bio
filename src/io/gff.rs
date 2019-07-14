@@ -19,7 +19,6 @@
 
 use itertools::Itertools;
 use multimap::MultiMap;
-use regex::Regex;
 use std::convert::AsRef;
 use std::fs;
 use std::io;
@@ -93,15 +92,10 @@ impl<R: io::Read> Reader<R> {
     /// Iterate over all records.
     pub fn records(&mut self) -> Records<'_, R> {
         let (delim, term, vdelim) = self.gff_type.separator();
-        let r = format!(
-            r" *(?P<key>[^{delim}{term}\t]+){delim}(?P<value>[^{delim}{term}\t]+){term}?",
-            delim = delim as char,
-            term = term as char
-        );
-        let attribute_re = Regex::new(&r).unwrap();
         Records {
             inner: self.inner.deserialize(),
-            attribute_re,
+            term: term as char,
+            delim: delim as char,
             value_delim: vdelim as char,
         }
     }
@@ -122,7 +116,8 @@ type GffRecordInner = (
 /// An iterator over the records of a GFF file.
 pub struct Records<'a, R: io::Read> {
     inner: csv::DeserializeRecordsIter<'a, R, GffRecordInner>,
-    attribute_re: Regex,
+    term: char,
+    delim: char,
     value_delim: char,
 }
 
@@ -145,11 +140,21 @@ impl<'a, R: io::Read> Iterator for Records<'a, R> {
                 )| {
                     let trim_quotes = |s: &str| s.trim_matches('\'').trim_matches('"').to_owned();
                     let mut attributes = MultiMap::new();
-                    for caps in self.attribute_re.captures_iter(&raw_attributes) {
-                        for value in caps["value"].split(self.value_delim) {
-                            attributes.insert(trim_quotes(&caps["key"]), trim_quotes(value));
+
+                    // TODO - better to make the attributes parsed lazily
+                    // Split on key-value pairs on "term".  Split key/values by "delim".  Split multiple values by "value_delim"
+                    for kv in raw_attributes.split(self.term) {
+                        let kv_arr : Vec<&str>= kv.trim().split(self.delim).collect();
+                        match kv_arr.as_slice() {
+                            [key, multi_value] => {
+                                for value in multi_value.split(self.value_delim) {
+                                    attributes.insert(trim_quotes(key), trim_quotes(value))
+                                }
+                            },
+                            _ => ()  // Ignore fields with extra 'delim'.
                         }
-                    }
+                    };
+
                     Record {
                         seqname,
                         source,
